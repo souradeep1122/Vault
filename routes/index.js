@@ -282,16 +282,17 @@ app.use('/api', router);
 app.get('/', (req, res) => res.render('index'));
 app.use(express.static(path.join(process.cwd(), 'public')));
 
-// --- SERVER STARTUP (FORCED PORT 3000) ---
-const PORT = 3000;
+// --- SERVER STARTUP ---
+// On Render, the port is provided via process.env.PORT. 
+// We use 3000 only as a local fallback.
+const PORT = process.env.PORT || 3000;
 
 mongoose.connect(MONGO_URI)
     .then(() => {
         console.log('Connected to MongoDB.');
-        app.listen(PORT, () => {
+        app.listen(PORT, '0.0.0.0', () => {
             console.log('-------------------------------------------');
-            console.log(`Vault Server strictly running on port: ${PORT}`);
-            console.log(`URL: http://localhost:${PORT}`);
+            console.log(`Vault Server running on port: ${PORT}`);
             console.log('-------------------------------------------');
         });
     })
