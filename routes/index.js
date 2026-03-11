@@ -283,18 +283,29 @@ app.get('/', (req, res) => res.render('index'));
 app.use(express.static(path.join(process.cwd(), 'public')));
 
 // --- SERVER STARTUP ---
-// On Render, the port is provided via process.env.PORT. 
-// We use 3000 only as a local fallback.
-const PORT = process.env.PORT || 3000;
+function startServer(port) {
+    const server = app.listen(port, '0.0.0.0', () => {
+        console.log('-------------------------------------------');
+        console.log(`Vault Server running on port: ${port}`);
+        console.log('-------------------------------------------');
+    });
+
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.warn(`Port ${port} is busy. Retrying with ${Number(port) + 1}...`);
+            startServer(Number(port) + 1);
+        } else {
+            console.error('Server error:', err);
+        }
+    });
+}
+
+const INITIAL_PORT = process.env.PORT || 3000;
 
 mongoose.connect(MONGO_URI)
     .then(() => {
         console.log('Connected to MongoDB.');
-        app.listen(PORT, '0.0.0.0', () => {
-            console.log('-------------------------------------------');
-            console.log(`Vault Server running on port: ${PORT}`);
-            console.log('-------------------------------------------');
-        });
+        startServer(INITIAL_PORT);
     })
     .catch(err => {
         console.error('MongoDB connection error:', err);
