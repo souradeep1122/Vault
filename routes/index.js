@@ -9,7 +9,6 @@ const crypto = require('crypto');
 const cors = require('cors');
 const path = require('path');
 
-
 const app = express();
 const router = express.Router();
 
@@ -67,48 +66,26 @@ function decrypt(text) {
     }
 }
 
-// -------------------------------------------------------------------
-// FIX 1: Correct public-ID extraction.
-// Cloudinary URLs look like:
-//   https://res.cloudinary.com/<cloud>/image/upload/v1234/vault_secure/abc.jpg
-//   https://res.cloudinary.com/<cloud>/raw/upload/v1234/vault_secure/abc.pdf
-// We need everything AFTER the version segment, WITHOUT the extension.
-// -------------------------------------------------------------------
+// --- CLOUDINARY UTILS ---
 function getPublicIdFromUrl(url) {
     if (!url) return null;
     try {
-        // Match everything after /upload/  (optionally skipping a version like v12345/)
         const match = url.match(/\/upload\/(?:v\d+\/)?(.+)$/);
         if (!match) return null;
-        const withExt = match[1]; // e.g. "vault_secure/abc.pdf"
-        // Strip the last extension only
-        return withExt.replace(/\.[^/.]+$/, ''); // => "vault_secure/abc"
+        const withExt = match[1]; 
+        return withExt.replace(/\.[^/.]+$/, ''); 
     } catch (e) {
         return null;
     }
 }
 
-// -------------------------------------------------------------------
-// FIX 2: Determine the Cloudinary resource_type from a stored URL.
-// PDFs are uploaded as resource_type:'raw', images as 'image'.
-// Using the wrong type on destroy() silently fails.
-// -------------------------------------------------------------------
 function getResourceTypeFromUrl(url) {
     if (!url) return 'image';
-    // Cloudinary embeds the resource type in the URL path segment
     if (url.includes('/raw/upload/'))   return 'raw';
     if (url.includes('/video/upload/')) return 'video';
-    return 'image'; // default
+    return 'image';
 }
 
-
-
-
-// -------------------------------------------------------------------
-// FIX 3: Cloudinary storage with explicit allowed formats + size limit.
-// resource_type:'auto' tells Cloudinary to detect PDF vs image.
-// file_size_limit (in bytes) prevents silent 413 rejections on mobile.
-// -------------------------------------------------------------------
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: async (req, file) => {
@@ -116,10 +93,8 @@ const storage = new CloudinaryStorage({
                       file.originalname.toLowerCase().endsWith('.pdf');
         return {
             folder:          'vault_secure',
-            resource_type:   'auto',          // lets Cloudinary handle both PDF and image
+            resource_type:   'auto',
             allowed_formats: ['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp', 'pdf'],
-            // For images: eager-transform to JPEG so we always have a viewable URL
-            // For PDFs:  Cloudinary auto-generates a jpg preview via URL params (see below)
             ...(isPdf ? {} : {
                 format: 'jpg',
                 transformation: [{ quality: 'auto', fetch_format: 'jpg' }]
@@ -128,8 +103,6 @@ const storage = new CloudinaryStorage({
     }
 });
 
-// FIX 4: Raise multer's file-size ceiling (50 MB) so large mobile PDFs aren't
-// rejected before they even reach Cloudinary.
 const upload = multer({
     storage: storage,
     limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
@@ -138,7 +111,7 @@ const upload = multer({
             'image/jpeg', 'image/jpg', 'image/png',
             'image/heic', 'image/heif', 'image/webp',
             'application/pdf',
-            'application/octet-stream' // iOS Safari sometimes sends PDFs as this
+            'application/octet-stream'
         ];
         if (allowed.includes(file.mimetype)) {
             cb(null, true);
@@ -153,8 +126,8 @@ const DocumentSchema = new mongoose.Schema({
     type:  String,
     name:  String,
     date:  String,
-    pdf:   String, // encrypted Cloudinary URL (raw/image)
-    jpeg:  String, // encrypted JPEG-viewable URL
+    pdf:   String,
+    jpeg:  String,
     size:  Number
 });
 
@@ -165,41 +138,24 @@ const PersonSchema = new mongoose.Schema({
 
 const Person = mongoose.model('Person', PersonSchema);
 
-// -------------------------------------------------------------------
-// FIX 5: Build correct JPEG preview URL for PDFs.
-// Instead of naive string-replace (.pdf → .jpg), use Cloudinary's
-// URL transformation API to render page 1 of the PDF as a JPEG.
-// -------------------------------------------------------------------
 function buildJpegUrl(cloudinaryUrl, isPdf) {
-    if (!isPdf) return cloudinaryUrl; // already an image URL
-
-    // Cloudinary PDF-to-JPEG: swap resource type path & set format + page
-    // Input:  https://res.cloudinary.com/<c>/raw/upload/v.../vault_secure/doc.pdf
-    // Output: https://res.cloudinary.com/<c>/image/upload/pg_1,f_jpg,q_auto/v.../vault_secure/doc
+    if (!isPdf) return cloudinaryUrl;
     try {
         let url = cloudinaryUrl;
-
-        // 1. Switch resource-type segment from 'raw' to 'image'
         url = url.replace('/raw/upload/', '/image/upload/');
-
-        // 2. Inject transformation string right after /upload/
         url = url.replace('/image/upload/', '/image/upload/pg_1,f_jpg,q_auto/');
-
-        // 3. Strip .pdf extension so Cloudinary serves JPEG
         url = url.replace(/\.pdf$/i, '');
-
         return url;
     } catch (e) {
         return cloudinaryUrl;
     }
 }
 
-// --- DECRYPT & RESHAPE PERSON ---
 const decryptPerson = (p) => {
     const personObj = p.toObject ? p.toObject() : p;
     return {
         _id:       personObj._id.toString(),
-        name:      personObj.name,
+        name:       personObj.name,
         documents: (personObj.documents || []).map(d => ({
             _id:  d._id.toString(),
             type: d.type,
@@ -213,7 +169,6 @@ const decryptPerson = (p) => {
 };
 
 // --- API ROUTES ---
-
 router.get('/people', async (req, res) => {
     try {
         const people = await Person.find();
@@ -240,7 +195,6 @@ router.delete('/people/:id', async (req, res) => {
             for (const doc of person.documents) {
                 const realUrl = decrypt(doc.pdf);
                 const publicId = getPublicIdFromUrl(realUrl);
-                // FIX 6: Use correct resource_type so deletes actually work
                 const resType  = getResourceTypeFromUrl(realUrl);
                 if (publicId) {
                     await cloudinary.uploader
@@ -256,13 +210,10 @@ router.delete('/people/:id', async (req, res) => {
     }
 });
 
-// FIX 7: Multer error middleware so upload errors (size, type) reach the client
-//         instead of crashing the request silently on mobile.
 router.post('/documents/:personId',
     (req, res, next) => {
         upload.single('file')(req, res, (err) => {
             if (err) {
-                console.error('Multer/Cloudinary upload error:', err);
                 if (err.code === 'LIMIT_FILE_SIZE') {
                     return res.status(413).json({ error: 'File too large. Maximum size is 50 MB.' });
                 }
@@ -275,20 +226,14 @@ router.post('/documents/:personId',
         try {
             const person = await Person.findById(req.params.personId);
             if (!person) return res.status(404).json({ error: 'Person not found' });
-
             if (!req.file) return res.status(400).json({ error: 'No file received by server' });
 
-            const uploadedUrl  = req.file.path;   // Cloudinary secure URL
+            const uploadedUrl  = req.file.path;
             const fileSize     = req.file.size || 0;
             const originalName = req.file.originalname || '';
-
-            // FIX 5 applied: build a proper JPEG preview URL for PDFs
             const isPdf = originalName.toLowerCase().endsWith('.pdf') ||
                           req.file.mimetype === 'application/pdf';
             const jpegUrl = buildJpegUrl(uploadedUrl, isPdf);
-
-            console.log(`Uploaded [${isPdf ? 'PDF' : 'IMAGE'}]: ${uploadedUrl}`);
-            console.log(`JPEG preview URL: ${jpegUrl}`);
 
             const newDoc = {
                 type: req.body.type,
@@ -303,7 +248,6 @@ router.post('/documents/:personId',
             await person.save();
             res.json(decryptPerson(person));
         } catch (err) {
-            console.error('Document save error:', err);
             res.status(500).json({ error: err.message });
         }
     }
@@ -318,7 +262,6 @@ router.delete('/documents/:personId/:docId', async (req, res) => {
         if (doc) {
             const realUrl  = decrypt(doc.pdf);
             const publicId = getPublicIdFromUrl(realUrl);
-            // FIX 6: Correct resource_type for delete
             const resType  = getResourceTypeFromUrl(realUrl);
             if (publicId) {
                 await cloudinary.uploader
@@ -336,32 +279,25 @@ router.delete('/documents/:personId/:docId', async (req, res) => {
 });
 
 app.use('/api', router);
-
-// Serve Frontend
-app.get('/', (req, res) => {
-   
-   
-    res.render('index');
-});
+app.get('/', (req, res) => res.render('index'));
 app.use(express.static(path.join(process.cwd(), 'public')));
 
-// Port Discovery
-function startServer(port) {
-    const numericPort = Number(port);
-    app.listen(numericPort, () => {
-        console.log('-------------------------------------------');
-        console.log(`Vault Running: http://localhost:${numericPort}`);
-        console.log('-------------------------------------------');
-    }).on('error', e => {
-        if (e.code === 'EADDRINUSE') {
-            startServer(numericPort + 1);
-        } else {
-            console.error('Server error:', e);
-        }
+// --- SERVER STARTUP (FORCED PORT 3000) ---
+const PORT = 3000;
+
+mongoose.connect(MONGO_URI)
+    .then(() => {
+        console.log('Connected to MongoDB.');
+        app.listen(PORT, () => {
+            console.log('-------------------------------------------');
+            console.log(`Vault Server strictly running on port: ${PORT}`);
+            console.log(`URL: http://localhost:${PORT}`);
+            console.log('-------------------------------------------');
+        });
+    })
+    .catch(err => {
+        console.error('MongoDB connection error:', err);
+        process.exit(1);
     });
-}
 
-const INITIAL_PORT = process.env.PORT || 5000;
-mongoose.connect(MONGO_URI).then(() => startServer(INITIAL_PORT));
-
-module.exports = router;
+module.exports = app;
